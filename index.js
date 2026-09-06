@@ -1,61 +1,23 @@
-const path = require("path");
-const express = require("express");
-const cors = require("cors");
-const morgan = require("morgan");
-const { init: initDB, Counter } = require("./db");
+const express = require('express')
+const paymentHandler = require('./payment-notify.js')
 
-const logger = morgan("tiny");
+const app = express()
+app.use(express.json({ type: '*/*' }))
 
-const app = express();
-app.use(express.urlencoded({ extended: false }));
-app.use(express.json());
-app.use(cors());
-app.use(logger);
-
-// 首页
-app.get("/", async (req, res) => {
-  res.sendFile(path.join(__dirname, "index.html"));
-});
-
-// 更新计数
-app.post("/api/count", async (req, res) => {
-  const { action } = req.body;
-  if (action === "inc") {
-    await Counter.create();
-  } else if (action === "clear") {
-    await Counter.destroy({
-      truncate: true,
-    });
+app.post('/pay/notify', async (req, res) => {
+  try {
+    const result = await paymentHandler.main({ body: req.body })
+    const statusCode = Number(result && result.statusCode) || 200
+    let body = result && result.body
+    if (typeof body !== 'string') body = JSON.stringify(body || { code: 'SUCCESS', message: '成功' })
+    res.status(statusCode).set(result && result.headers ? result.headers : {}).send(body)
+  } catch (error) {
+    console.error('payment notify http error', error)
+    res.status(500).json({ code: 'FAIL', message: '支付结果处理失败' })
   }
-  res.send({
-    code: 0,
-    data: await Counter.count(),
-  });
-});
+})
 
-// 获取计数
-app.get("/api/count", async (req, res) => {
-  const result = await Counter.count();
-  res.send({
-    code: 0,
-    data: result,
-  });
-});
+app.get('/health', (_req, res) => res.json({ ok: true }))
 
-// 小程序调用，获取微信 Open ID
-app.get("/api/wx_openid", async (req, res) => {
-  if (req.headers["x-wx-source"]) {
-    res.send(req.headers["x-wx-openid"]);
-  }
-});
-
-const port = process.env.PORT || 80;
-
-async function bootstrap() {
-  await initDB();
-  app.listen(port, () => {
-    console.log("启动成功", port);
-  });
-}
-
-bootstrap();
+const port = Number(process.env.PORT || 80)
+app.listen(port, '0.0.0.0', () => console.log(`payment-notify listening on ${port}`))
