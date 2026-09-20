@@ -3,9 +3,11 @@ const express = require('express')
 // separate lets the same handler run as a cloud function or Cloud Run service.
 const paymentHandler = require('./payment-notify.js')
 
+
 const app = express()
 app.use(express.json({ verify: (req, _res, buffer) => { req.rawBody = buffer.toString('utf8') } }))
 app.use(express.urlencoded({ extended: false }))
+
 
 app.post('/pay/notify', async (req, res) => {
   try {
@@ -21,7 +23,11 @@ app.post('/pay/notify', async (req, res) => {
 })
 
 
-app.get('/health', (_req, res) => res.json({ ok: true }))
+
+
+app.get('/health', (_req, res) => res.json({ ok: true, build: '20260920-internal-token' }))
+
 
 const port = Number(process.env.PORT || 80)
 app.listen(port, '0.0.0.0', () => console.log(`payment-notify listening on ${port}`))
+
