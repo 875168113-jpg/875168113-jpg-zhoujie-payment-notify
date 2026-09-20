@@ -136,7 +136,9 @@ exports.main = async event => {
     orderNo = String(transaction.out_trade_no || '').slice(0, 100)
     if (!orderNo) return response(400, { code: 'FAIL', message: '缺少订单号' })
     if (transaction.trade_state && transaction.trade_state !== 'SUCCESS') return response(200, { code: 'SUCCESS', message: '非成功交易无需更新' })
-    const invoked = await cloud.callFunction({ name: 'commerce', data: { action: 'reconcileSinglePayment', op: 'reconcileSinglePayment', jimuAction: 'reconcileSinglePayment', trigger: 'payment-notify', orderNo } })
+    const internalJobToken = String(process.env.INTERNAL_JOB_TOKEN || '').trim()
+    if (internalJobToken.length < 32) throw new Error('INTERNAL_JOB_TOKEN 未配置或长度不足32位')
+    const invoked = await cloud.callFunction({ name: 'commerce', data: { action: 'reconcileSinglePayment', op: 'reconcileSinglePayment', jimuAction: 'reconcileSinglePayment', trigger: 'payment-notify', internalJobToken, orderNo } })
     const synced = invoked && invoked.result
     if (!synced || !synced.ok) {
       if (synced && synced.error === '订单不存在') return response(200, { code: 'SUCCESS', message: '订单不存在，已忽略' })
