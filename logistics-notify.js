@@ -13,6 +13,7 @@ function assertCloudCredentials() {
 const db = cloud.database()
 
 const ORDERS = 'commerce_orders'
+const AFTER_SALES = 'commerce_after_sales'
 const LOGISTICS = 'order_logistics'
 const ERRORS = 'system_error_logs'
 
@@ -136,6 +137,46 @@ async function persistTraces(order, lastResult) {
   return traces.length
 }
 
+async function persistReturnTraces(afterSale, lastResult) {
+  await ensureCollection(LOGISTICS)
+  const trackingNo = clean((lastResult && lastResult.nu) || afterSale.returnTrackingNo, 100)
+  const expressCode = clean((lastResult && lastResult.com) || afterSale.returnCarrierCode, 30)
+  const traces = tracesFromLastResult(lastResult)
+  const returnOrderId = `RETURN-${afterSale.orderNo}`
+  for (const trace of traces) {
+    const fingerprint = nodeKey(returnOrderId, trackingNo, trace.time, trace.context)
+    const existing = await db.collection(LOGISTICS).where({ fingerprint }).limit(1).get().catch(() => ({ data: [] }))
+    if (existing.data && existing.data.length) continue
+    await db.collection(LOGISTICS).add({
+      data: {
+        order_id: returnOrderId,
+        orderNo: afterSale.orderNo,
+        afterSaleId: afterSale._id,
+        logisticsDirection: 'return',
+        express_no: trackingNo,
+        express_code: expressCode,
+        logistics_time: trace.time,
+        logistics_desc: trace.context,
+        location: trace.location,
+        fingerprint,
+        create_time: db.serverDate(),
+        createdAtText: new Date().toISOString()
+      }
+    })
+  }
+  await db.collection(AFTER_SALES).doc(afterSale._id).update({
+    data: {
+      returnShippingState: logisticsStateText(lastResult && lastResult.state),
+      returnShippingMessage: traces.length ? '已收到快递100物流推送' : '暂无物流信息，请稍后再查看',
+      returnShippingTraces: traces,
+      returnShippingQueriedAtMs: Date.now(),
+      updatedAt: db.serverDate(),
+      updatedAtMs: Date.now()
+    }
+  })
+  return traces.length
+}
+
 exports.main = async event => {
   try {
     assertCloudCredentials()
@@ -155,25 +196,30 @@ exports.main = async event => {
       await writeError({ message: '回调缺少运单号', detail: String(paramText || '').slice(0, 200) })
       return response(200, { result: false, returnCode: '500', message: '缺少运单号' })
     }
-    const orders = await db.collection(ORDERS).where({ trackingNo }).limit(5).get()
-    if (!orders.data.length) {
+    const [orders, afterSales] = await Promise.all([
+      db.collection(ORDERS).where({ trackingNo }).limit(5).get().catch(() => ({ data: [] })),
+      db.collection(AFTER_SALES).where({ returnTrackingNo: trackingNo }).limit(5).get().catch(() => ({ data: [] }))
+    ])
+    if (!orders.data.length && !afterSales.data.length) {
       await writeError({ trackingNo, message: '找不到对应订单' })
       return response(200, { result: true, returnCode: '200', message: '成功' })
     }
-    const order = orders.data[0]
-    const salt = clean(order.kuaidi100Salt, 40)
+    const isReturn = !orders.data.length && afterSales.data.length > 0
+    const target = isReturn ? afterSales.data[0] : orders.data[0]
+    const salt = clean(isReturn ? target.returnKuaidi100Salt : target.kuaidi100Salt, 40)
     // 每次发货都会生成订单级 salt。没有 salt 的历史订单不能安全验证回调，
     // 必须拒绝写入，避免仅凭运单号伪造物流轨迹。
     if (!salt) {
-      await writeError({ orderNo: order.orderNo, trackingNo, message: '订单缺少物流回调签名盐值，已拒绝回调' })
+      await writeError({ orderNo: target.orderNo, trackingNo, message: '订单缺少物流回调签名盐值，已拒绝回调' })
       return response(200, { result: false, returnCode: '500', message: '订单签名配置缺失' })
     }
     const expected = md5Upper((paramText || JSON.stringify(payload)) + salt)
     if (!sign || expected !== sign.toUpperCase()) {
-      await writeError({ orderNo: order.orderNo, trackingNo, message: '快递100回调签名校验失败' })
+      await writeError({ orderNo: target.orderNo, trackingNo, message: '快递100回调签名校验失败' })
       return response(200, { result: false, returnCode: '500', message: '签名校验失败' })
     }
-    await persistTraces(order, lastResult)
+    if (isReturn) await persistReturnTraces(target, lastResult)
+    else await persistTraces(target, lastResult)
     return response(200, { result: true, returnCode: '200', message: '成功' })
   } catch (error) {
     console.error('kuaidi100 callback failed', error)
